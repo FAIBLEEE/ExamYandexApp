@@ -1,121 +1,15 @@
-name: Deploy to Yandex Cloud
-
-on:
-  push:
-    branches: [ main ]
-
-env:
-  REGISTRY_ID: ${{ secrets.YC_REGISTRY_ID }}
-  DB_HOST: "rc1b-tptaie72mntboqdv.mdb.yandexcloud.net"
-  DB_PORT: "6432"
-  DB_NAME: "examyandexapp"
-  DB_USER: "user"
-
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v3
-      with:
-        dotnet-version: '8.0.x'
-
-    - name: Build application
-      run: |
-        dotnet restore
-        dotnet build --configuration Release --no-restore
-        echo "✅ Application built successfully"
-
-    - name: Install Yandex Cloud CLI
-      run: |
-        curl -s https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
-        source $HOME/.bashrc
-        export PATH=$HOME/yandex-cloud/bin:$PATH
-        yc --version
-
-    - name: Configure Yandex Cloud CLI
-      run: |
-        source $HOME/.bashrc
-        export PATH=$HOME/yandex-cloud/bin:$PATH
-        echo '${{ secrets.YC_SA_JSON_KEY }}' > key.json
-        yc config set service-account-key key.json
-        yc config set cloud-id ${{ secrets.YC_CLOUD_ID }}
-        yc config set folder-id ${{ secrets.YC_FOLDER_ID }}
-        echo "Yandex Cloud CLI configured successfully"
-
-    - name: Build and push Docker image
-      run: |
-        source $HOME/.bashrc
-        export PATH=$HOME/yandex-cloud/bin:$PATH
-        # Build Docker image
-        docker build -t cr.yandex/${{ env.REGISTRY_ID }}/examyandexapp:latest .
-        
-        # Login to Yandex Container Registry
-        yc container registry configure-docker
-        
-        # Push image
-        docker push cr.yandex/${{ env.REGISTRY_ID }}/examyandexapp:latest
-        echo "✅ Docker image pushed to Yandex Container Registry"
-
-    - name: Configure kubectl
-      run: |
-        source $HOME/.bashrc
-        export PATH=$HOME/yandex-cloud/bin:$PATH
-        yc managed-kubernetes cluster get-credentials ${{ secrets.YC_K8S_CLUSTER_ID }} --external
-        
-        # Проверка подключения к кластеру
-        kubectl cluster-info
-        kubectl get nodes
-        echo "✅ kubectl configured successfully"
-
-    - name: Create namespace and secrets
-      run: |
-        source $HOME/.bashrc
-        export PATH=$HOME/yandex-cloud/bin:$PATH
-        
-        # Создание namespace (исправленная версия)
-        if ! kubectl get namespace examyandexapp > /dev/null 2>&1; then
-          kubectl create namespace examyandexapp
-          echo "✅ Namespace examyandexapp created"
-        else
-          echo "✅ Namespace examyandexapp already exists"
-        fi
-        
-        # Проверить что namespace создан
-        kubectl get namespaces | grep examyandexapp
-        
-        # Создание PostgreSQL secret
-        kubectl create secret generic postgres-secret \
-          --namespace examyandexapp \
-          --from-literal=db-host=${{ env.DB_HOST }} \
-          --from-literal=db-port=${{ env.DB_PORT }} \
-          --from-literal=db-name=${{ env.DB_NAME }} \
-          --from-literal=db-user=${{ env.DB_USER }} \
-          --from-literal=db-password=${{ secrets.DB_PASSWORD }} \
-          --dry-run=client -o yaml | kubectl apply -f -
-        
-        # Создание Object Storage secret
-        kubectl create secret generic objectstorage-secret \
-          --namespace examyandexapp \
-          --from-literal=access-key=${{ secrets.OBJECTSTORAGE_ACCESS_KEY }} \
-          --from-literal=secret-key=${{ secrets.OBJECTSTORAGE_SECRET_KEY }} \
-          --from-literal=bucket-name=${{ secrets.OBJECTSTORAGE_BUCKET_NAME }} \
-          --dry-run=client -o yaml | kubectl apply -f -
-
-        # Проверить созданные секреты
-        echo "✅ Secrets created successfully"
-        kubectl get secrets -n examyandexapp
-
     - name: Deploy application
       run: |
         source $HOME/.bashrc
         export PATH=$HOME/yandex-cloud/bin:$PATH
         
-        # Применение deployment
+        # Удаляем старый deployment чтобы избежать конфликтов
+        kubectl delete deployment examyandexapp -n examyandexapp --ignore-not-found=true
+        
+        # Ждем очистки
+        sleep 10
+        
+        # Применение исправленного deployment
         kubectl apply -f - <<EOF
         apiVersion: apps/v1
         kind: Deployment
@@ -187,19 +81,21 @@ jobs:
                   limits:
                     memory: "512Mi"
                     cpu: "500m"
-                # Добавляем проверки жизнеспособности
+                # ИСПРАВЛЕННЫЕ HEALTH CHECKS
                 livenessProbe:
                   httpGet:
-                    path: /health
+                    path: /  # Используем корневой путь
                     port: 8080
-                  initialDelaySeconds: 30
+                  initialDelaySeconds: 60  # Больше времени на запуск
                   periodSeconds: 10
+                  timeoutSeconds: 5
                 readinessProbe:
                   httpGet:
-                    path: /health
+                    path: /  # Используем корневой путь
                     port: 8080
-                  initialDelaySeconds: 5
+                  initialDelaySeconds: 30
                   periodSeconds: 5
+                  timeoutSeconds: 3
         ---
         apiVersion: v1
         kind: Service
@@ -215,60 +111,27 @@ jobs:
           type: LoadBalancer
         EOF
         
-        echo "🚀 Deployment applied, waiting for pods to start..."
-        
-        # Даем подам время на запуск перед проверкой
+        echo "🚀 New deployment applied, waiting for pods to start..."
         sleep 30
         
-        # Показываем статус подов
+        # Показываем статус
         echo "=== Current Pod Status ==="
         kubectl get pods -n examyandexapp -o wide
         
-        # Показываем события для диагностики
-        echo "=== Recent Events ==="
-        kubectl get events -n examyandexapp --sort-by='.lastTimestamp' | tail -10
-        
-        # Показываем логи если есть запущенные поды
-        echo "=== Pod Logs (if any) ==="
+        # Показываем логи новых подов
+        echo "=== New Pod Logs ==="
         for pod in $(kubectl get pods -n examyandexapp -o jsonpath='{.items[*].metadata.name}'); do
           echo "--- Logs for pod $pod ---"
-          kubectl logs -n examyandexapp $pod --tail=20 || echo "No logs available for $pod"
+          kubectl logs -n examyandexapp $pod --tail=10 || echo "No logs available for $pod"
         done
         
-        # Ожидание развертывания с увеличенным таймаутом
+        # Ожидание развертывания
         echo "=== Waiting for rollout to complete ==="
         kubectl rollout status deployment/examyandexapp -n examyandexapp --timeout=600s
         
         # Финальная проверка
-        echo "=== Final Pod Status ==="
+        echo "=== Final Status ==="
         kubectl get pods -n examyandexapp -o wide
-        
-        echo "=== Service Info ==="
         kubectl get service -n examyandexapp
         
         echo "🎉 Application deployed successfully!"
-
-    - name: Debug if failed
-      if: failure()
-      run: |
-        source $HOME/.bashrc
-        export PATH=$HOME/yandex-cloud/bin:$PATH
-        
-        echo "=== DEBUG INFORMATION ==="
-        echo "=== Pods Details ==="
-        kubectl get pods -n examyandexapp -o wide
-        
-        echo "=== Pods Description ==="
-        for pod in $(kubectl get pods -n examyandexapp -o jsonpath='{.items[*].metadata.name}'); do
-          echo "--- Description for pod $pod ---"
-          kubectl describe pod -n examyandexapp $pod
-        done
-        
-        echo "=== Events ==="
-        kubectl get events -n examyandexapp --sort-by='.lastTimestamp' | tail -20
-        
-        echo "=== Deployment Description ==="
-        kubectl describe deployment -n examyandexapp examyandexapp
-        
-        echo "=== Secrets Check ==="
-        kubectl get secrets -n examyandexapp
