@@ -4,6 +4,13 @@ on:
   push:
     branches: [ main ]
 
+env:
+  REGISTRY_ID: ${{ secrets.YC_REGISTRY_ID }}
+  DB_HOST: "rc1b-tptaie72mntboqdv.mdb.yandexcloud.net"
+  DB_PORT: "6432"
+  DB_NAME: "examyandexapp"
+  DB_USER: "user"
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -45,13 +52,13 @@ jobs:
         source $HOME/.bashrc
         export PATH=$HOME/yandex-cloud/bin:$PATH
         # Build Docker image
-        docker build -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/examyandexapp:latest .
+        docker build -t cr.yandex/${{ env.REGISTRY_ID }}/examyandexapp:latest .
         
-        # Login to Yandex Container Registry (без --force)
+        # Login to Yandex Container Registry
         yc container registry configure-docker
         
         # Push image
-        docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/examyandexapp:latest
+        docker push cr.yandex/${{ env.REGISTRY_ID }}/examyandexapp:latest
         echo "✅ Docker image pushed to Yandex Container Registry"
 
     - name: Configure kubectl
@@ -59,19 +66,145 @@ jobs:
         source $HOME/.bashrc
         export PATH=$HOME/yandex-cloud/bin:$PATH
         yc managed-kubernetes cluster get-credentials ${{ secrets.YC_K8S_CLUSTER_ID }} --external
+        
+        # Проверка подключения к кластеру
+        kubectl cluster-info
         kubectl get nodes
         echo "✅ kubectl configured successfully"
 
-    - name: Deploy to Kubernetes
+    - name: Create namespace and secrets
       run: |
         source $HOME/.bashrc
         export PATH=$HOME/yandex-cloud/bin:$PATH
-        # Update deployment with new image
-        kubectl set image deployment/examyandexapp examyandexapp=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/examyandexapp:latest -n examyandexapp
         
-        # Wait for rollout to complete
+        # Создание namespace (исправленная версия)
+        if ! kubectl get namespace examyandexapp > /dev/null 2>&1; then
+          kubectl create namespace examyandexapp
+          echo "✅ Namespace examyandexapp created"
+        else
+          echo "✅ Namespace examyandexapp already exists"
+        fi
+        
+        # Проверить что namespace создан
+        kubectl get namespaces | grep examyandexapp
+        
+        # Создание PostgreSQL secret
+        kubectl create secret generic postgres-secret \
+          --namespace examyandexapp \
+          --from-literal=db-host=${{ env.DB_HOST }} \
+          --from-literal=db-port=${{ env.DB_PORT }} \
+          --from-literal=db-name=${{ env.DB_NAME }} \
+          --from-literal=db-user=${{ env.DB_USER }} \
+          --from-literal=db-password=${{ secrets.DB_PASSWORD }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Создание Object Storage secret
+        kubectl create secret generic objectstorage-secret \
+          --namespace examyandexapp \
+          --from-literal=access-key=${{ secrets.OBJECTSTORAGE_ACCESS_KEY }} \
+          --from-literal=secret-key=${{ secrets.OBJECTSTORAGE_SECRET_KEY }} \
+          --from-literal=bucket-name=${{ secrets.OBJECTSTORAGE_BUCKET_NAME }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+        # Проверить созданные секреты
+        echo "✅ Secrets created successfully"
+        kubectl get secrets -n examyandexapp
+
+    - name: Deploy application
+      run: |
+        source $HOME/.bashrc
+        export PATH=$HOME/yandex-cloud/bin:$PATH
+        
+        # Применение deployment
+        kubectl apply -f - <<EOF
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: examyandexapp
+          namespace: examyandexapp
+        spec:
+          replicas: 2
+          selector:
+            matchLabels:
+              app: examyandexapp
+          template:
+            metadata:
+              labels:
+                app: examyandexapp
+            spec:
+              containers:
+              - name: examyandexapp
+                image: cr.yandex/${{ env.REGISTRY_ID }}/examyandexapp:latest
+                ports:
+                - containerPort: 8080
+                env:
+                - name: DB_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secret
+                      key: db-host
+                - name: DB_PORT
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secret
+                      key: db-port
+                - name: DB_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secret
+                      key: db-name
+                - name: DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secret
+                      key: db-user
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secret
+                      key: db-password
+                - name: ObjectStorage__AccessKey
+                  valueFrom:
+                    secretKeyRef:
+                      name: objectstorage-secret
+                      key: access-key
+                - name: ObjectStorage__SecretKey
+                  valueFrom:
+                    secretKeyRef:
+                      name: objectstorage-secret
+                      key: secret-key
+                - name: ObjectStorage__BucketName
+                  valueFrom:
+                    secretKeyRef:
+                      name: objectstorage-secret
+                      key: bucket-name
+                - name: ObjectStorage__ServiceUrl
+                  value: "https://storage.yandexcloud.net"
+                resources:
+                  requests:
+                    memory: "256Mi"
+                    cpu: "250m"
+                  limits:
+                    memory: "512Mi"
+                    cpu: "500m"
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: examyandexapp-service
+          namespace: examyandexapp
+        spec:
+          selector:
+            app: examyandexapp
+          ports:
+          - port: 80
+            targetPort: 8080
+          type: LoadBalancer
+        EOF
+        
+        # Ожидание развертывания
         kubectl rollout status deployment/examyandexapp -n examyandexapp --timeout=300s
         
-        # Verify deployment
-        kubectl get pods -n examyandexapp
-        echo "🚀 Deployment completed successfully!"
+        # Получение информации о сервисе
+        kubectl get service -n examyandexapp
+        echo "🚀 Application deployed successfully!"
