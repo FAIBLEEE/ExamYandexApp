@@ -47,8 +47,8 @@ jobs:
         # Build Docker image
         docker build -t cr.yandex/${{ secrets.YC_REGISTRY_ID }}/examyandexapp:latest .
         
-        # Login to Yandex Container Registry
-        yc container registry configure-docker --force
+        # Login to Yandex Container Registry (без --force)
+        yc container registry configure-docker
         
         # Push image
         docker push cr.yandex/${{ secrets.YC_REGISTRY_ID }}/examyandexapp:latest
@@ -58,7 +58,7 @@ jobs:
       run: |
         source $HOME/.bashrc
         export PATH=$HOME/yandex-cloud/bin:$PATH
-        yc managed-kubernetes cluster get-credentials ${{ secrets.YC_K8S_CLUSTER_ID }} --external --force
+        yc managed-kubernetes cluster get-credentials ${{ secrets.YC_K8S_CLUSTER_ID }} --external
         kubectl get nodes
         echo "✅ kubectl configured successfully"
 
