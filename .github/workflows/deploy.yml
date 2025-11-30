@@ -163,8 +163,14 @@ jobs:
         export PATH=$HOME/yandex-cloud/bin:$PATH
         
         SHORT_SHA=$(git rev-parse --short HEAD)
+        echo "Using image tag: $SHORT_SHA"
         
-        # Применение deployment с стратегией обновления
+        # Сначала проверяем текущее состояние
+        echo "=== Current Deployment State ==="
+        kubectl get deployment examyandexapp -n examyandexapp -o wide || echo "Deployment not found, will create new"
+        kubectl get pods -n examyandexapp -o wide || echo "No pods found"
+        
+        # Применение deployment с health checks
         kubectl apply -f - <<EOF
         apiVersion: apps/v1
         kind: Deployment
@@ -185,6 +191,8 @@ jobs:
             metadata:
               labels:
                 app: examyandexapp
+              annotations:
+                deployment.kubernetes.io/revision: "$SHORT_SHA"
             spec:
               containers:
               - name: examyandexapp
@@ -241,13 +249,12 @@ jobs:
                   limits:
                     memory: "512Mi"
                     cpu: "500m"
-                # Исправленные проверки жизнеспособности
+                # Health checks с увеличенными таймаутами для инициализации БД
                 livenessProbe:
                   httpGet:
                     path: /health
                     port: 8080
-                    scheme: HTTP
-                  initialDelaySeconds: 60  # Увеличиваем для инициализации БД
+                  initialDelaySeconds: 120
                   periodSeconds: 30
                   timeoutSeconds: 10
                   failureThreshold: 3
@@ -255,27 +262,55 @@ jobs:
                   httpGet:
                     path: /health
                     port: 8080
-                    scheme: HTTP
-                  initialDelaySeconds: 30
-                  periodSeconds: 10
+                  initialDelaySeconds: 60
+                  periodSeconds: 15
                   timeoutSeconds: 5
                   failureThreshold: 3
-                # Добавляем startup probe для ASP.NET Core приложений
-                startupProbe:
-                  httpGet:
-                    path: /health
-                    port: 8080
-                    scheme: HTTP
-                  initialDelaySeconds: 10
-                  periodSeconds: 10
-                  timeoutSeconds: 5
-                  failureThreshold: 10
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: examyandexapp-service
+          namespace: examyandexapp
+        spec:
+          selector:
+            app: examyandexapp
+          ports:
+          - port: 80
+            targetPort: 8080
+          type: LoadBalancer
         EOF
         
-        echo "🚀 Deployment applied"
+        echo "🚀 Deployment applied, waiting for rollout..."
         
-        # Ожидание развертывания с увеличенным таймаутом
-        kubectl rollout status deployment/examyandexapp -n examyandexapp --timeout=600s
+        # Ожидание развертывания с детальной диагностикой
+        echo "=== Waiting for rollout ==="
+        if kubectl rollout status deployment/examyandexapp -n examyandexapp --timeout=600s; then
+          echo "✅ Rollout completed successfully"
+        else
+          echo "❌ Rollout failed or timed out, checking status..."
+          
+          # Диагностика при неудаче
+          echo "=== Pods Status ==="
+          kubectl get pods -n examyandexapp -o wide
+          
+          echo "=== Deployment Description ==="
+          kubectl describe deployment examyandexapp -n examyandexapp
+          
+          echo "=== Pods Description ==="
+          for pod in $(kubectl get pods -n examyandexapp -o jsonpath='{.items[*].metadata.name}'); do
+            echo "--- Pod: $pod ---"
+            kubectl describe pod $pod -n examyandexapp
+          done
+          
+          echo "=== Pods Logs ==="
+          for pod in $(kubectl get pods -n examyandexapp -o jsonpath='{.items[*].metadata.name}'); do
+            echo "--- Logs for pod: $pod ---"
+            kubectl logs $pod -n examyandexapp --tail=50 || echo "No logs available"
+          done
+          
+          exit 1
+        fi
         
         # Финальная проверка
         echo "=== Final Status ==="
@@ -284,23 +319,24 @@ jobs:
         
         echo "🎉 Application deployed successfully!"
 
-    - name: Verify deployment
+    - name: Verify health endpoints
       run: |
         source $HOME/.bashrc
         export PATH=$HOME/yandex-cloud/bin:$PATH
         
-        echo "=== Verification ==="
+        echo "=== Health Check Verification ==="
         
-        # Проверяем все поды
-        kubectl get pods -n examyandexapp
+        # Ждем немного чтобы сервис точно был готов
+        sleep 30
         
-        # Проверяем логи последнего пода
-        LATEST_POD=$(kubectl get pods -n examyandexapp --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}')
-        echo "=== Logs from latest pod: $LATEST_POD ==="
-        kubectl logs -n examyandexapp $LATEST_POD --tail=50
+        # Получаем внешний IP сервиса
+        SERVICE_IP=$(kubectl get service examyandexapp-service -n examyandexapp -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
         
-        # Проверяем статус readiness/liveness probes
-        echo "=== Pod Details ==="
-        kubectl describe pod -n examyandexapp $LATEST_POD | grep -A 10 "Liveness\|Readiness"
+        if [ -n "$SERVICE_IP" ]; then
+          echo "Testing health endpoint at: http://$SERVICE_IP/health"
+          curl -f http://$SERVICE_IP/health || echo "Health check failed"
+        else
+          echo "Service IP not available yet"
+        fi
         
-        echo "✅ Deployment verification completed"
+        echo "✅ Health check completed"

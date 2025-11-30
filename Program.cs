@@ -3,7 +3,7 @@ using ExamYandexApp.Data;
 using ExamYandexApp.Services;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddSingleton<IObjectStorageService, YandexObjectStorageService>();
+
 // Add services to the container.
 builder.Services.AddControllersWithViews();
 
@@ -28,6 +28,9 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 // Configure Object Storage Service
 builder.Services.AddSingleton<IObjectStorageService, YandexObjectStorageService>();
 
+// Add Health Checks
+builder.Services.AddHealthChecks();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -47,6 +50,19 @@ app.UseAuthorization();
 app.MapControllerRoute(
     name: "default",
     pattern: "{controller=Home}/{action=Index}/{id?}");
+
+// Simple health check endpoint
+app.MapGet("/health", () => 
+{
+    return Results.Ok(new { 
+        status = "Healthy", 
+        timestamp = DateTime.UtcNow,
+        environment = app.Environment.EnvironmentName
+    });
+});
+
+// Health checks endpoint
+app.MapHealthChecks("/health");
 
 // Apply database creation on startup
 try
