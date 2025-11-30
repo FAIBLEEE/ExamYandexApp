@@ -1,0 +1,46 @@
+@model IEnumerable<ExamYandexApp.Models.Image>
+
+@{
+    ViewData["Title"] = "Uploaded Images";
+}
+
+<div class="container mt-4">
+    <h2>Uploaded Images</h2>
+    
+    @if (TempData["SuccessMessage"] != null)
+    {
+        <div class="alert alert-success">@TempData["SuccessMessage"]</div>
+    }
+
+    <div class="mb-3">
+        <a href="@Url.Action("Upload")" class="btn btn-primary">Upload New Image</a>
+    </div>
+
+    @if (Model.Any())
+    {
+        <div class="row">
+            @foreach (var image in Model)
+            {
+                <div class="col-md-4 mb-4">
+                    <div class="card">
+                        <img src="@image.ObjectStorageKey" class="card-img-top" alt="@image.OriginalFileName" 
+                             style="height: 200px; object-fit: cover;">
+                        <div class="card-body">
+                            <h6 class="card-title">@image.OriginalFileName</h6>
+                            <p class="card-text small text-muted">
+                                Uploaded: @image.UploadDate.ToString("g")<br>
+                                Size: @(image.FileSize / 1024) KB
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-info">
+            No images uploaded yet. <a href="@Url.Action("Upload")">Upload the first one!</a>
+        </div>
+    }
+</div>

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: examyandexapp
+data:
+  # Эти значения будут переопределены из Secret
+  DB_HOST: "rc1b-tptaie72mntboqdv.mdb.yandexcloud.net"
+  DB_PORT: "6432"
+  DB_NAME: "examyandexapp"
+  DB_USER: "user"

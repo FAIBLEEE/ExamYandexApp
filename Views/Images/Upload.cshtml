@@ -1,0 +1,33 @@
+@{
+    ViewData["Title"] = "Upload Image";
+}
+
+<div class="container mt-4">
+    <h2>Upload Image</h2>
+    
+    <div class="row">
+        <div class="col-md-6">
+            <form asp-action="Upload" method="post" enctype="multipart/form-data">
+                @Html.AntiForgeryToken()
+                
+                <div class="mb-3">
+                    <label for="file" class="form-label">Select Image File</label>
+                    <input type="file" class="form-control" name="file" id="file" accept="image/*" required>
+                    <div class="form-text">Supported formats: JPEG, PNG, GIF, etc.</div>
+                </div>
+                
+                <div class="mb-3">
+                    <button type="submit" class="btn btn-primary">Upload</button>
+                    <a href="@Url.Action("Index")" class="btn btn-secondary">Cancel</a>
+                </div>
+                
+                @if (!ViewData.ModelState.IsValid)
+                {
+                    <div class="alert alert-danger">
+                        @Html.ValidationSummary()
+                    </div>
+                }
+            </form>
+        </div>
+    </div>
+</div>
