@@ -187,6 +187,19 @@ jobs:
                   limits:
                     memory: "512Mi"
                     cpu: "500m"
+                # Добавляем проверки жизнеспособности
+                livenessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8080
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8080
+                  initialDelaySeconds: 5
+                  periodSeconds: 5
         ---
         apiVersion: v1
         kind: Service
@@ -202,9 +215,60 @@ jobs:
           type: LoadBalancer
         EOF
         
-        # Ожидание развертывания
-        kubectl rollout status deployment/examyandexapp -n examyandexapp --timeout=300s
+        echo "🚀 Deployment applied, waiting for pods to start..."
         
-        # Получение информации о сервисе
+        # Даем подам время на запуск перед проверкой
+        sleep 30
+        
+        # Показываем статус подов
+        echo "=== Current Pod Status ==="
+        kubectl get pods -n examyandexapp -o wide
+        
+        # Показываем события для диагностики
+        echo "=== Recent Events ==="
+        kubectl get events -n examyandexapp --sort-by='.lastTimestamp' | tail -10
+        
+        # Показываем логи если есть запущенные поды
+        echo "=== Pod Logs (if any) ==="
+        for pod in $(kubectl get pods -n examyandexapp -o jsonpath='{.items[*].metadata.name}'); do
+          echo "--- Logs for pod $pod ---"
+          kubectl logs -n examyandexapp $pod --tail=20 || echo "No logs available for $pod"
+        done
+        
+        # Ожидание развертывания с увеличенным таймаутом
+        echo "=== Waiting for rollout to complete ==="
+        kubectl rollout status deployment/examyandexapp -n examyandexapp --timeout=600s
+        
+        # Финальная проверка
+        echo "=== Final Pod Status ==="
+        kubectl get pods -n examyandexapp -o wide
+        
+        echo "=== Service Info ==="
         kubectl get service -n examyandexapp
-        echo "🚀 Application deployed successfully!"
+        
+        echo "🎉 Application deployed successfully!"
+
+    - name: Debug if failed
+      if: failure()
+      run: |
+        source $HOME/.bashrc
+        export PATH=$HOME/yandex-cloud/bin:$PATH
+        
+        echo "=== DEBUG INFORMATION ==="
+        echo "=== Pods Details ==="
+        kubectl get pods -n examyandexapp -o wide
+        
+        echo "=== Pods Description ==="
+        for pod in $(kubectl get pods -n examyandexapp -o jsonpath='{.items[*].metadata.name}'); do
+          echo "--- Description for pod $pod ---"
+          kubectl describe pod -n examyandexapp $pod
+        done
+        
+        echo "=== Events ==="
+        kubectl get events -n examyandexapp --sort-by='.lastTimestamp' | tail -20
+        
+        echo "=== Deployment Description ==="
+        kubectl describe deployment -n examyandexapp examyandexapp
+        
+        echo "=== Secrets Check ==="
+        kubectl get secrets -n examyandexapp
